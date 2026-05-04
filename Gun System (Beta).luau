@@ -1,3 +1,7 @@
+Created by:
+Roblox: Azan_Dev (azanlava)
+Discord: azanullah or codeostudio
+
 -- -- Services used by the client gun script for input, camera control, replication, and cleanup.
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
