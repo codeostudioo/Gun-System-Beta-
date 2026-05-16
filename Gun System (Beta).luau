@@ -27,7 +27,6 @@ local ShootRemote = ReplicatedStorage:WaitForChild("ShootRemote")
 local GunSoundRemote = ReplicatedStorage:WaitForChild("GunSoundRemote")
 
 -- These tables keep the state -> asset lookup simple.
--- I used to do this with tiny helper functions but a table is cleaner here.
 local AnimationIds = {
 	Hold = Prefix.Pistol.Revolver.HoldAnim,
 	Shoot = Prefix.Pistol.Revolver.ShootAnim,
