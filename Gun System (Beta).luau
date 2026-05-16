@@ -3,23 +3,42 @@
 --	Discord: azanullah or codeostudio
 
 -- Services
+-- I keep these here becuase this script uses them alot.
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local ContextActionService = game:GetService("ContextActionService")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 
 -- Player Info
+-- This is a local gun script so everything starts from LocalPlayer.
+-- HumanoidRootPart matters here becuase the camera turns the player from that part.
 local Player = Players.LocalPlayer
 local Character = Player.Character or Player.CharacterAdded:Wait()
-local Humanoid = Character:WaitForChild("Humanoid")
 local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
 
 -- Required modules and remotes
-local Prefix = require(ReplicatedStorage.GunModules.Prefix)
+-- Prefix just has the gun data.
+-- ShootRemote tells the server to shoot, and GunSoundRemote lets other players hear the shot.
+local Prefix = require(ReplicatedStorage.GunData.Prefix)
 local ShootRemote = ReplicatedStorage:WaitForChild("ShootRemote")
 local GunSoundRemote = ReplicatedStorage:WaitForChild("GunSoundRemote")
+
+-- These tables keep the state -> asset lookup simple.
+-- I used to do this with tiny helper functions but a table is cleaner here.
+local AnimationIds = {
+	Hold = Prefix.Pistol.Revolver.HoldAnim,
+	Shoot = Prefix.Pistol.Revolver.ShootAnim,
+	Reload = Prefix.Pistol.Revolver.ReloadAnim,
+}
+
+local SoundIds = {
+	Hold = Prefix.Pistol.Revolver.EquipSFX,
+	Shoot = Prefix.Pistol.Revolver.ShootSFX,
+	Reload = Prefix.Pistol.Revolver.ReloadSFX,
+}
 
 -- Table will be returned
 local Shared = {}
@@ -27,44 +46,36 @@ local Shared = {}
 local Gun = {}	-- Class
 Gun.__index = Gun	-- Lets the gun object use the methods inside the Gun class.
 
---[[
-
-	Explanation of OOP in Luau:
-	
-	To start, a class is basically a blueprint or a like a template for creating objects.
-	A class defines the main propertise and method all objects made from the class will have
-	
-	When we do Gun.new() we are basically calling the method new from the class and passing any perpamiter if they have any.
-	That new method will then create the object.
-	
-	Then we link the object to the class using setmetatable, and by doing this the object can use the other methods and properties from the class.
-	By using self in the method the script can look back to specific object and can call other methods from it.
-
-	So a class is basically the whole process of creating objects that give the same propertise and methods. but if the script would change something in the class it would only change it for the object.
-	So the class is like the starting properties and methods that all the objects created by the new function will have.
-	
-	Another way to see class that class is basically the whole process of OOP is:
-	Defining the class (local Gun = {}) 
-	Creating objects with Gun.new() 
-	Linking objects to the class using setmetatable 
-	Calling methods using self to refer to the object
-		
---]]
-
--- This makes a new gun object from the Gun class.
--- It stores all the main values the gun needs like the player, mouse, camera,
--- ammo, damage, range, reload state, and some other values used for the gun behavior.
+-- This makes a new gun object.
+-- Most of the local gun values are stored here.
 -- Creating Object 
 function Gun.New()	--Method
+	-- setmetatable links this new table back to Gun so it can use the methods below.
 	local self = setmetatable({}, Gun)
+	
+	-- Basic refs the gun keeps using.
 	self.Player = Player
 	self.Mouse = Player:GetMouse()
 	self.Camera = workspace.CurrentCamera
+	
+	-- Main state values.
 	self.Weapon = nil
 	self.IsEquipped = false
 	self.IsReloading = false
+	
+	-- These are stored so I can stop or replace them later.
 	self.RenderConnection = nil
 	self.HoldTrack = nil
+	self.ZoomTween = nil
+	-- This is the camera position for the over the shoulder view.
+	self.CameraOffset = Vector3.new(2.6, 2, 8.5)
+	-- These store the recoil kick and then go back to 0 over time.
+	self.CameraShake = Vector2.new(0, 0)
+	self.CameraShakeRecoverySpeed = 12
+	self.CameraShakeHorizontalKick = 0.45
+	self.CameraShakeVerticalKick = 1.1
+	
+	-- These are the main values this revolver uses.
 	self.FireCooldown = 0.25
 	self.LastShotTime = 0
 	self.Ammo = 12
@@ -74,28 +85,34 @@ function Gun.New()	--Method
 	return self
 end
 
--- This updates the ammo text on the player's screen.
--- If a custom text is passed in like "Reloading", it shows that instead of the normal ammo text.
-function Gun:UpdateAmmoText(text)	--Method
-	self.Player.PlayerGui.Ammo.Ammotext.Text = text or (self.Ammo.."/"..self.MaxAmmo)
-end
+-- This is just for smooth aiming.
+-- Instead of snapping, I only tween the zoom now.
+function Gun:TweenAimCamera(isAiming)
+	-- Aim uses 50 FOV, normal view uses 60.
+	local targetFov = 60
+	if isAiming then
+		targetFov = 50
+	end
+	
+	-- Short tween so it feels smooth but still quick.
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 
--- This is what happens when the gun plays a animation.
--- First it checks what animation should be played based on the state, 
--- then it makes sure the animation is valid, then it creates the animation, then makes sure the player has a humanoid and animator, then stops the old hold animation if needed,
--- then plays the new animation, then saves the hold animation track, and then removes the animation object after a short time.
-function Gun:PlayAnimation(state)	--Method
-	local function AnimationState()
-		if state == "Hold" then
-			return Prefix.Pistol.Revolver.HoldAnim
-		elseif state == "Shoot" then
-			return Prefix.Pistol.Revolver.ShootAnim
-		elseif state == "Reload" then
-			return Prefix.Pistol.Revolver.ReloadAnim
-		end
+	-- Cancel the old tween first incase the player right clicks really fast.
+	if self.ZoomTween then
+		self.ZoomTween:Cancel()
 	end
 
-	local animationId = AnimationState()
+	self.ZoomTween = TweenService:Create(self.Camera, tweenInfo, {FieldOfView = targetFov})
+	self.ZoomTween:Play()
+end
+
+-- This handles all the gun animations.
+-- I do it in one place so I dont repeat the same setup 3 times.
+function Gun:PlayAnimation(state)	--Method
+	-- Get the right animation id for the state.
+	local animationId = AnimationIds[state]
+	
+	-- If there is no animation id, just stop here so it doesent error.
 	if not animationId then
 		return
 	end
@@ -104,21 +121,28 @@ function Gun:PlayAnimation(state)	--Method
 	animation.AnimationId = animationId
 
 	local humanoid = self.Player.Character and self.Player.Character:FindFirstChildOfClass("Humanoid")
+	
+	-- Character might not be ready in some edge cases, so I check first.
 	if not humanoid then
 		return
 	end
 
+	-- Use the Animator if its already there, if not just make one.
 	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator")
 	animator.Parent = humanoid
 
+	-- Stop the old hold anim first if one is still playing.
 	if state == "Hold" and self.HoldTrack then
 		self.HoldTrack:Stop(0.1)
 		self.HoldTrack = nil
 	end
 
+	-- Load the animation and play it right away.
 	local animationTrack = animator:LoadAnimation(animation)
 	animationTrack:Play()
 
+	-- Save the hold anim so I can stop it later.
+	-- If that same hold anim ends, clear the saved track.
 	if state == "Hold" then
 		self.HoldTrack = animationTrack
 		animationTrack.Stopped:Connect(function()
@@ -128,28 +152,22 @@ function Gun:PlayAnimation(state)	--Method
 		end)
 	end
 
+	-- Clean up the temp Animation object after a bit.
 	Debris:AddItem(animation, 5)
 end
 
--- This is what happens when the gun plays a sound.
--- First it checks what sound should be played based on the state, then it makes sure the sound is valid, then it makes a invisible part in the world,
--- then puts the sound inside it, then plays it, and then removes it after a short time.
+-- This handles the gun sounds.
+-- I do it this way so the sound comes from the gun area and not just the camera.
 function Gun:PlaySound(state, position)	--Method
-	local function SoundState()
-		if state == "Hold" then
-			return Prefix.Pistol.Revolver.EquipSFX
-		elseif state == "Shoot" then
-			return Prefix.Pistol.Revolver.ShootSFX
-		elseif state == "Reload" then
-			return Prefix.Pistol.Revolver.ReloadSFX
-		end
-	end
-
-	local soundId = SoundState()
+	-- GEts the right sound id for the state.
+	local soundId = SoundIds[state]
+	
+	-- If there is no Sound id, just stop here so it doesent error.
 	if not soundId then
 		return
 	end
 
+	-- Tiny invisible part so Roblox has a spot to play the 3D sound from.
 	local soundPart = Instance.new("Part")
 	soundPart.Name = "GunSoundPart"
 	soundPart.Transparency = 1
@@ -163,17 +181,20 @@ function Gun:PlaySound(state, position)	--Method
 
 	local sound = Instance.new("Sound")
 	sound.SoundId = soundId
+	
+	-- This controls how far away the sound can still be heard from.
 	sound.RollOffMaxDistance = 150
 	sound.Parent = soundPart
 	sound:Play()
 
+	-- Clean the whole sound part up later so these do not pile up.
 	Debris:AddItem(soundPart, 5)
 end
 
--- This function make the OTS gun system aim work for the player by setting the players camera offset to (2, 2, 8) and then it will update every frame.
+-- This is the main over the shoulder camera setup.
+-- Once the gun is equipped, this takes over the normal camera.
 function Gun:StartAim()	--Method
-	-- This is the main aim function for the custom over the shoulder camera.
-
+	
 	-- Gets the direction the camera is currently facing.
 	local lookVector = self.Camera.CFrame.LookVector
 	
@@ -183,87 +204,85 @@ function Gun:StartAim()	--Method
 	-- Gets the up/down camera angle from the direction the camera is facing.
 	local CameraAngleY = math.deg(math.asin(math.clamp(lookVector.Y, -1, 1)))
 	
-	-- Sets the camera offset so the aim view stays above, behind, and a little to the side of the player.
-	local CameraOffset = Vector3.new(2, 2, 8)
-	
-	-- Sets the camera to scriptable so this script can control it instead of Roblox default camera.
+	-- Scriptable is needed here or Roblox's normal camera will fight this.
 	self.Camera.CameraType = Enum.CameraType.Scriptable
 	
-	-- Sets the Mouse To be locked to the center of the screen.
+	-- This is the normal gun camera fov before right click aim changes it.
+	self.Camera.FieldOfView = 60
+	
+	-- Locking the mouse lets me aim from movement instead of a free cursor.
 	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
 	
-	-- Sets the mouse icon to the given icon.
+	-- I swap the icon too so it feels more like a gun.
 	self.Mouse.Icon = "http://www.roblox.com/asset/?id=5681283745"
 	
-	--MOUSE MOVEMENT
-	-- Just makes a function that later we can call once the mouse starts moving to update the camera based off which direction the mouse is moving.
-	-- actionName: The action name we could use this to check if the action type and run the correct action
-	-- inputState: The current state of the input (Enum.UserInputState.Begin, Enum.UserInputState.End, Enum.UserInputState.Change) Example is when the mouse starts moving it would be inputState.Change
-	-- inputObject: This holds the Input mouse movement data in our case so Delta.X and Delta.Y. It can be used to rotate the camera horizontally and vertically.
-	local function PlayerInput(actionName, inputState, inputObject)
+	-- MOUSE MOVEMENT
+	-- this just turn the mouse into two angle values.
+	-- Then the camera code below uses those every frame.
+	local function PlayerInput(_actionName, _inputState, inputObject)
+		-- The first two values are unused here, but BindAction still sends them.
 		
-		-- This just updates CameraAngleX based on how much the mouse had moved in that frame.
-		-- A example for this is, if inputObject.Delta.X is 10, that means the mouse moved 10 on
-		-- the X axis in one frame. So this code only uses half of that, so the camera
-		-- would update by 5 instead. Using the full Delta.X would still work, but
-		-- the sensitivity would be hard to cotrol.
+		-- Scale X down a bit so the camera doesent feel too fast.
 		CameraAngleX -= (inputObject.Delta.X - inputObject.Delta.X * 0.5)
 		
-		-- This updates CameraAngleY based on how much the mouse moved in that frame.
-		-- A example for this is, if inputObject.Delta.Y is 10, that means the mouse moved 10 on
-		-- the Y axis in one frame. This code only uses half of that, so the camera
-		-- would update by 5 instead. The main difference from CameraAngleX is that
-		-- this one uses math.clamp so the player cannot look too far up or down. since if we let it would flip.
+		-- Clamp Y so the camera cant flip.
 		CameraAngleY = math.clamp(CameraAngleY - inputObject.Delta.Y * 0.5, -80, 80)
 	end
 
-	-- Binds the PlayerInput function to mouse movement so the camera updates when the mouse moves.
+	-- I use BindAction here since I only want this while the gun camera is on.
 	ContextActionService:BindAction("PlayerInput", PlayerInput, false, Enum.UserInputType.MouseMovement)
 	
-	--CAMERA MOVEMENT
-	-- Connects a function to RenderStepped so it runs every frame and keeps
-	-- updating the camera and the player direction while aiming.
-	self.RenderConnection = RunService.RenderStepped:Connect(function()
+	-- CAMERA MOVEMENT
+	-- This is the main loop for the gun camera.
+	self.RenderConnection = RunService.Heartbeat:Connect(function(deltaTime)
+		-- deltaTime is used so the recoil fade stays smooth even if fps changes.
 		
-		-- This will makes the starting CFrame from the HumanoidRootPart position.
-		-- Then after that it rotates that CFrame using cameraAnglex for left and right and then
-		-- ameraAngley for up and down. A example is, if cameraAnglex was 30, the
-		-- camera would turn 30 degrees to the side from the starting direction
-		local StartCframe = CFrame.new(HumanoidRootPart.CFrame.Position) * CFrame.Angles(0, math.rad(CameraAngleX), 0) * CFrame.Angles(math.rad(CameraAngleY), 0, 0)
+		-- Recoil fades back here so each shot kicks, then settles.
+		self.CameraShake = self.CameraShake:Lerp(Vector2.new(0, 0), math.clamp(deltaTime * self.CameraShakeRecoverySpeed, 0, 1))
+		
+		-- This is the camera base. Player position first, then left right, up down, and recoil.
+		local StartCframe = CFrame.new(HumanoidRootPart.CFrame.Position) * CFrame.Angles(0, math.rad(CameraAngleX + self.CameraShake.X), 0) * CFrame.Angles(math.rad(CameraAngleY + self.CameraShake.Y), 0, 0)
 	
-		-- This will get the camera to where it should be placed by using the cameraOffset.
-		-- For example because the offset is (2, 2, 8), the camera stays above,
-		-- behind, and a little to the side of the player.
+			-- Use the camera offset for the shoulder view.
+		local CameraOffset = self.CameraOffset
+		
+		-- Turn the local offset into a real world position.
 		local CameraCframe = StartCframe:PointToWorldSpace(CameraOffset)
 		
-		-- This will get the point the camera should look at. the -10000 is used so the
-		-- camera keeps looking forward in the same direction
+		-- Far focus point so the camera keeps aiming forward.
 		local CameraFocus = StartCframe:PointToWorldSpace(Vector3.new(CameraOffset.X, CameraOffset.Y, -10000))
 
-		-- This will set the actual camera CFrame by placing the camera at CameraCframe
-		-- and making it look toward CameraFocus.
+		-- lookAt is the easy way to place the camera and keep it facing the right way.
 		self.Camera.CFrame = CFrame.lookAt(CameraCframe, CameraFocus)
 
-		-- This will gets a point very far in front of where the camera is looking.
+		-- I also use that same forward direction to turn the player.
 		local Looking = self.Camera.CFrame:PointToWorldSpace(Vector3.new(0,0,-10000))
 		
-		-- This will rotates the HumanoidRootPart so the player faces the same direction all the time when
-		-- the camera is aiming, while still keepig the player at the same position.
+		-- This keeps the body, camera, and shot direction lined up.
 		HumanoidRootPart.CFrame = CFrame.lookAt(HumanoidRootPart.Position, Vector3.new(Looking.X, HumanoidRootPart.Position.Y, Looking.Z))
 	end)
 end
 
--- This is what happens when the gun stops aiming.
--- first it unbinds the mouse movement action, disconnects the RenderStepped connection, then resets the camera back to normal, then resets the mouse behavior,
--- then sets the zoom and field of view back to normal, and then clears the mouse icon.
+-- This cleans up the gun camera.
+-- Main thing here is putting roblox normal camera and input back.
 function Gun:StopAim()	--Method
+	-- Stop reading the mouse first.
 	ContextActionService:UnbindAction("PlayerInput")
 
+	-- Disconnect the camera loop if its still running.
 	if self.RenderConnection then
 		self.RenderConnection:Disconnect()
 		self.RenderConnection = nil
 	end
 
+	-- Stop any tween that might still be going.
+	if self.ZoomTween then
+		self.ZoomTween:Cancel()
+		self.ZoomTween = nil
+	end
+
+	-- Reset everything, including the recoil so the next equip starts clean.
+	self.CameraShake = Vector2.new(0, 0)
 	self.Camera.CameraType = Enum.CameraType.Custom
 	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 	self.Player.CameraMinZoomDistance = 10
@@ -272,64 +291,88 @@ function Gun:StopAim()	--Method
 	self.Mouse.Icon = ""
 end
 
--- This is what happens when the gun gets equipped.
--- first It stores the weapon, then sets the gun to equipped, then starts the aim, then plays the hold animation, then plays the hold sound, then updates the ammo text, and then shows the ammo ui on the players screen.
+-- Equip mostly just turns all the local gun stuff on.
+-- Camera, hold anim, hold sound, and ammo ui start here.
 function Gun:Equip(weapon: Instance)	--Method
+	-- Store the tool first so the rest of the gun code knows what is equipped.
 	self.Weapon = weapon
 	self.IsEquipped = true
+	
+	-- This starts the main local gun funtions right away.
 	self:StartAim()
 	self:PlayAnimation("Hold")
 	self:PlaySound("Hold", self.Camera.CFrame.Position)
-	self:UpdateAmmoText()
+	self.Player.PlayerGui.Ammo.Ammotext.Text = self.Ammo.."/"..self.MaxAmmo
+	
+	-- Show ammo ui only while the gun is actually equipped.
 	self.Player.PlayerGui.Ammo.Ammotext.Visible = true
 end
 
--- This is what happens when the gun gets unequipped.
--- first It hides the ammo ui, then stops the aim, then stops the hold animation, then and sets the gun back to unequipped.
+-- Unequip does the opposite and shuts the local gun state down.
+-- I also stop the hold anim here so the player doesent get stuck like that.
 function Gun:Unequip()	--Method
+	-- Hide the ammo ui first since the gun is going away.
 	self.Player.PlayerGui.Ammo.Ammotext.Visible = false
 	self:StopAim()
+	
+	-- Stop the hold track if its still playing.
 	if self.HoldTrack then
 		self.HoldTrack:Stop(0.1)
 		self.HoldTrack = nil
 	end
+	
 	self.IsEquipped = false
 end
 
--- This is what happens when the gun shoots.
--- first it checks the fire cooldown, then makes sure the gun is not out of ammo, then check if it's not reloading, then it removes a bullet, 
--- then it updates the ammo ui text, then fires the shot to the server, then tracks the last shot time, then plays the animation and sound, then returns true.
+-- This is the local fire flow.
+-- Ammo, anim, sound, and recoil happen right away here, then the real shot still goes to the server.
 function Gun:Shoot(mousePosition)	--Method
 	local currentTime = time()
+	
+	-- Basic fire rate check so the player cant spam faster than the gun should shoot.
 	if currentTime - self.LastShotTime < self.FireCooldown then
 		return false
 	end
 
+	-- If ammo is gone, stop here and show the message.
 	if self.Ammo <= 0 then
 		print("No ammo!")
-		self:UpdateAmmoText("No ammo!")
+		self.Player.PlayerGui.Ammo.Ammotext.Text = "No ammo!"
 		return false
 	end
 
+	-- Dont let the player shoot in the middle of a reload.
 	if self.IsReloading then
 		return false
 	end
 
+	-- Update ammo first so the player sees the shot right away.
 	self.Ammo -= 1
-	self:UpdateAmmoText()
+	self.Player.PlayerGui.Ammo.Ammotext.Text = self.Ammo.."/"..self.MaxAmmo
+	
+	-- This is the part that tells the server about the shot.
 	ShootRemote:FireServer(self.Weapon, self.Ammo, mousePosition, self.Damage, self.Range)
 	self.LastShotTime = currentTime
 	self:PlayAnimation("Shoot")
+	
+	-- Random left/right so every shot doesent feel exactly the same.
+	local HorizontalKick = (math.random() * 2 - 1) * self.CameraShakeHorizontalKick
+	local VerticalKick = self.CameraShakeVerticalKick
+
+	-- Add the new kick on top of whatever recoil is still there.
+	self.CameraShake += Vector2.new(HorizontalKick, VerticalKick)
+	
+	-- Only play the local gun sound if the weapon still has a handle.
 	if self.Weapon and self.Weapon:FindFirstChild("Handle") then
 		self:PlaySound("Shoot", self.Weapon.Handle.Position)
 	end
+	
 	return true
 end
 
--- This is what happens when the gun reloads.
--- first it checks if the gun is already reloading or if the ammo is already full, then if it needs a reload it sets the gun to reloading, then updates the ammo ui text, 
--- then plays the reload animation and sound, then waits 3 seconds, then sets the ammo to full, then sets the gun to not reloading, then updates the ammo ui text, and then returns true.
+-- Reload gives feedback now, then refills the ammo after the reload time.
 function Gun:Reload()	--Method
+	-- If its already reloading, or already full, there is nothing to do.
 	if self.IsReloading or self.Ammo >= self.MaxAmmo then
 		if self.Ammo >= self.MaxAmmo then
 			print("Ammo already full")
@@ -337,63 +380,68 @@ function Gun:Reload()	--Method
 		return false
 	end
 
+	-- This starts the reload feedback striaght away.
 	self.IsReloading = true
-	self:UpdateAmmoText("Reloading")
+	self.Player.PlayerGui.Ammo.Ammotext.Text = "Reloading"
 	self:PlayAnimation("Reload")
 	self:PlaySound("Reload", self.Camera.CFrame.Position)
-	task.spawn(function()
-		task.wait(3)
+	
+	-- Wait 3 seconds, then fill the ammo back up.
+	task.delay(3, function()
 		self.Ammo = self.MaxAmmo
 		self.IsReloading = false
-		self:UpdateAmmoText()
+		self.Player.PlayerGui.Ammo.Ammotext.Text = self.Ammo.."/"..self.MaxAmmo
 	end)
+	
 	return true
 end
 
--- Makes the gun object from the gun class so we can use all the gun methods and properties from it.
+-- This is the one local gun object the client uses.
 local NewGun = Gun.New()
 
--- Starts the gun system and connects all the main gun events.
+-- Shared.Init is the start point for the module.
+-- All the tool events, mouse input, and remotes get connected here.
 function Shared.Init()
-	-- Make sure the player is fully loaded.
+	-- I still wait here becuase Studio can sometimes run this before the backpack stuff is ready.
 	Player:WaitForChild("Backpack")
 	Player.Character:WaitForChild("Humanoid")
 	Player.Character:WaitForChild("HumanoidRootPart")
 	
-	-- Defineing the gun.
+	-- This script is built arond one revolver right now.
 	local Revolver = Player.Backpack:WaitForChild("Revolver")
 	
-	-- Event for when the gun is equiped.
+	-- When the tool is equipped, turn all the local gun systems on.
 	Revolver.Equipped:Connect(function()
 		NewGun:Equip(Revolver)
 	end)
 	
-	-- Event for when the gun is unequiped.
+	-- Same thing here, just the cleanup side.
 	Revolver.Unequipped:Connect(function()
 		NewGun:Unequip()
 	end)
 	
-	-- Event for when the gun is shot.
+	-- Activated is the easiest Tool event to use for firing.
 	Revolver.Activated:Connect(function()
 		NewGun:Shoot(NewGun.Mouse.Hit.Position)
 	end)
 	
-	-- Event for when the mouse is pressed.
+	-- Right click aims in, but only if the gun is equipped right now.
 	NewGun.Mouse.Button2Down:Connect(function()
 		if NewGun.IsEquipped then
-			NewGun.Camera.FieldOfView = 40
+			NewGun:TweenAimCamera(true)
 		end
 	end)
 	
-	-- Event for when the mouse is going up.
+	-- When right click is let go, go back to the normal view.
 	NewGun.Mouse.Button2Up:Connect(function()
 		if NewGun.IsEquipped then
-			NewGun.Camera.FieldOfView = 60
+			NewGun:TweenAimCamera(false)
 		end
 	end)
 	
-	-- Event to play other players shoot sounds on this client.
+	-- I skip the local shooter here since their own shot already played.
 	GunSoundRemote.OnClientEvent:Connect(function(shooter, position)
+		-- If the shooter is us, dont play the same sound twice.
 		if shooter == Player then
 			return
 		end
@@ -401,10 +449,11 @@ function Shared.Init()
 		NewGun:PlaySound("Shoot", position)
 	end)
 	
-	-- Event to reload the gun when the player presses R.
+	-- Reload is simple enough that raw keyboard input is fine here.
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then return end
 
+		-- Only reload when R is pressed and the gun is actually equipped.
 		if input.KeyCode == Enum.KeyCode.R and NewGun.IsEquipped then
 			NewGun:Reload()
 		end
