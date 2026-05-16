@@ -1,6 +1,4 @@
---Created by:
---	Roblox: Azan_Dev (azanlava)
---	Discord: azanullah or codeostudio
+-- Roblox: Azan_Dev (azanlava) | Discord: azanullah or codeostudio
 
 -- Services
 -- I keep these here becuase this script uses them alot.
@@ -14,10 +12,16 @@ local Debris = game:GetService("Debris")
 
 -- Player Info
 -- This is a local gun script so everything starts from LocalPlayer.
--- HumanoidRootPart matters here becuase the camera turns the player from that part.
+-- HumanoidRootPart matters here becuase the camera turns the player from that part
 local Player = Players.LocalPlayer
 local Character = Player.Character or Player.CharacterAdded:Wait()
 local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+
+-- Update these refs when the player gets a new character after respawn.
+Player.CharacterAdded:Connect(function(NewCharacter)
+	Character = NewCharacter
+	HumanoidRootPart = NewCharacter:WaitForChild("HumanoidRootPart")
+end)
 
 -- Required modules and remotes
 -- Prefix just has the gun data.
@@ -26,7 +30,7 @@ local Prefix = require(ReplicatedStorage.GunData.Prefix)
 local ShootRemote = ReplicatedStorage:WaitForChild("ShootRemote")
 local GunSoundRemote = ReplicatedStorage:WaitForChild("GunSoundRemote")
 
--- These tables keep the state -> asset lookup simple.
+-- These tables hold the animation and sound ids for each state.
 local AnimationIds = {
 	Hold = Prefix.Pistol.Revolver.HoldAnim,
 	Shoot = Prefix.Pistol.Revolver.ShootAnim,
@@ -47,7 +51,6 @@ Gun.__index = Gun	-- Lets the gun object use the methods inside the Gun class.
 
 -- This makes a new gun object.
 -- Most of the local gun values are stored here.
--- Creating Object 
 function Gun.New()	--Method
 	-- setmetatable links this new table back to Gun so it can use the methods below.
 	local self = setmetatable({}, Gun)
@@ -84,8 +87,7 @@ function Gun.New()	--Method
 	return self
 end
 
--- This is just for smooth aiming.
--- Instead of snapping, I only tween the zoom now.
+-- This tween makes aiming feel smoother.
 function Gun:TweenAimCamera(isAiming)
 	-- Aim uses 50 FOV, normal view uses 60.
 	local targetFov = 60
@@ -105,8 +107,8 @@ function Gun:TweenAimCamera(isAiming)
 	self.ZoomTween:Play()
 end
 
--- This handles all the gun animations.
--- I do it in one place so I dont repeat the same setup 3 times.
+-- This handes all the gun animations.
+-- I do it in one place so I dont repeat the same setup 3 times
 function Gun:PlayAnimation(state)	--Method
 	-- Get the right animation id for the state.
 	local animationId = AnimationIds[state]
@@ -158,7 +160,7 @@ end
 -- This handles the gun sounds.
 -- I do it this way so the sound comes from the gun area and not just the camera.
 function Gun:PlaySound(state, position)	--Method
-	-- GEts the right sound id for the state.
+	-- Get the right sound id for the state
 	local soundId = SoundIds[state]
 	
 	-- If there is no Sound id, just stop here so it doesent error.
@@ -206,20 +208,20 @@ function Gun:StartAim()	--Method
 	-- Scriptable is needed here or Roblox's normal camera will fight this.
 	self.Camera.CameraType = Enum.CameraType.Scriptable
 	
-	-- This is the normal gun camera fov before right click aim changes it.
+	-- This is the normal gun camera fov before right click aim changes it
 	self.Camera.FieldOfView = 60
 	
-	-- Locking the mouse lets me aim from movement instead of a free cursor.
+	-- Lock the mouse for aiming instead of a free cursor.
 	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
 	
 	-- I swap the icon too so it feels more like a gun.
 	self.Mouse.Icon = "http://www.roblox.com/asset/?id=5681283745"
 	
 	-- MOUSE MOVEMENT
-	-- this just turn the mouse into two angle values.
+	-- This turns mouse movement into two angle values.
 	-- Then the camera code below uses those every frame.
 	local function PlayerInput(_actionName, _inputState, inputObject)
-		-- The first two values are unused here, but BindAction still sends them.
+		-- The first two values are unused here, but BindAction stil sends them.
 		
 		-- Scale X down a bit so the camera doesent feel too fast.
 		CameraAngleX -= (inputObject.Delta.X - inputObject.Delta.X * 0.5)
@@ -242,7 +244,7 @@ function Gun:StartAim()	--Method
 		-- This is the camera base. Player position first, then left right, up down, and recoil.
 		local StartCframe = CFrame.new(HumanoidRootPart.CFrame.Position) * CFrame.Angles(0, math.rad(CameraAngleX + self.CameraShake.X), 0) * CFrame.Angles(math.rad(CameraAngleY + self.CameraShake.Y), 0, 0)
 	
-			-- Use the camera offset for the shoulder view.
+		-- Use the camera offset for the shoulder view
 		local CameraOffset = self.CameraOffset
 		
 		-- Turn the local offset into a real world position.
@@ -263,7 +265,7 @@ function Gun:StartAim()	--Method
 end
 
 -- This cleans up the gun camera.
--- Main thing here is putting roblox normal camera and input back.
+-- This puts the normal camera and input back.
 function Gun:StopAim()	--Method
 	-- Stop reading the mouse first.
 	ContextActionService:UnbindAction("PlayerInput")
@@ -293,11 +295,11 @@ end
 -- Equip mostly just turns all the local gun stuff on.
 -- Camera, hold anim, hold sound, and ammo ui start here.
 function Gun:Equip(weapon: Instance)	--Method
-	-- Store the tool first so the rest of the gun code knows what is equipped.
+	-- Store the tool first so the rest of the gun code knows what is equipped
 	self.Weapon = weapon
 	self.IsEquipped = true
 	
-	-- This starts the main local gun funtions right away.
+	-- This starts the main local gun stuff right away.
 	self:StartAim()
 	self:PlayAnimation("Hold")
 	self:PlaySound("Hold", self.Camera.CFrame.Position)
@@ -324,7 +326,7 @@ function Gun:Unequip()	--Method
 end
 
 -- This is the local fire flow.
--- Ammo, anim, sound, and recoil happen right away here, then the real shot still goes to the server.
+-- Ammo, anim, sound, and recoil happen right away here then the real shot stil goes to the server.
 function Gun:Shoot(mousePosition)	--Method
 	local currentTime = time()
 	
@@ -354,7 +356,7 @@ function Gun:Shoot(mousePosition)	--Method
 	self.LastShotTime = currentTime
 	self:PlayAnimation("Shoot")
 	
-	-- Random left/right so every shot doesent feel exactly the same.
+	-- Random left/right so every shot doesent feel exactly the same
 	local HorizontalKick = (math.random() * 2 - 1) * self.CameraShakeHorizontalKick
 	local VerticalKick = self.CameraShakeVerticalKick
 
@@ -398,33 +400,59 @@ end
 -- This is the one local gun object the client uses.
 local NewGun = Gun.New()
 
--- Shared.Init is the start point for the module.
--- All the tool events, mouse input, and remotes get connected here.
-function Shared.Init()
-	-- I still wait here becuase Studio can sometimes run this before the backpack stuff is ready.
-	Player:WaitForChild("Backpack")
-	Player.Character:WaitForChild("Humanoid")
-	Player.Character:WaitForChild("HumanoidRootPart")
-	
-	-- This script is built arond one revolver right now.
-	local Revolver = Player.Backpack:WaitForChild("Revolver")
-	
+-- This hooks the events up to one revolver tool.
+local function ConnectRevolver(Revolver)
+	if not Revolver then
+		return
+	end
+
 	-- When the tool is equipped, turn all the local gun systems on.
 	Revolver.Equipped:Connect(function()
 		NewGun:Equip(Revolver)
 	end)
-	
+
 	-- Same thing here, just the cleanup side.
 	Revolver.Unequipped:Connect(function()
 		NewGun:Unequip()
 	end)
-	
+
 	-- Activated is the easiest Tool event to use for firing.
 	Revolver.Activated:Connect(function()
 		NewGun:Shoot(NewGun.Mouse.Hit.Position)
 	end)
+end
+
+-- If the player respawns while using the gun, clear the old local gun state.
+Player.CharacterAdded:Connect(function()
+	if NewGun.IsEquipped then
+		NewGun:StopAim()
+	end
+
+	NewGun.Weapon = nil
+	NewGun.IsEquipped = false
+	NewGun.IsReloading = false
+	NewGun.HoldTrack = nil
+	NewGun.Ammo = NewGun.MaxAmmo
+	NewGun.Player.PlayerGui.Ammo.Ammotext.Visible = false
+
+	local NewRevolver = Player:WaitForChild("Backpack"):WaitForChild("Revolver")
+	ConnectRevolver(NewRevolver)
+end)
+
+-- Shared.Init is the start point for the module.
+-- All the tool events, mouse input, and remotes get connected here.
+function Shared.Init()
+	-- I still wait here becuase studio can sometimes run this before the backpack stuff is ready.
+	local CurrentCharacter = Player.Character or Player.CharacterAdded:Wait()
+	local Backpack = Player:WaitForChild("Backpack")
+	CurrentCharacter:WaitForChild("Humanoid")
+	CurrentCharacter:WaitForChild("HumanoidRootPart")
 	
-	-- Right click aims in, but only if the gun is equipped right now.
+	-- This script is built for one revolver.
+	local Revolver = Backpack:WaitForChild("Revolver")
+	ConnectRevolver(Revolver)
+	
+	-- Right click aims in if the gun is equiped.
 	NewGun.Mouse.Button2Down:Connect(function()
 		if NewGun.IsEquipped then
 			NewGun:TweenAimCamera(true)
@@ -448,7 +476,7 @@ function Shared.Init()
 		NewGun:PlaySound("Shoot", position)
 	end)
 	
-	-- Reload is simple enough that raw keyboard input is fine here.
+	-- Reload is simple enough that raw keyboard input is fine here
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then return end
 
